@@ -12,6 +12,9 @@ import {
   ResolvingNodeAttachConfiguration,
 } from '../configuration';
 import { processTree, analyseArguments } from './processTree/processTree';
+import { readConfig, Configuration } from '../common/contributionUtils';
+import { nearestDirectoryContaining } from '../common/urlUtils';
+import { isSubdirectoryOf } from '../common/pathUtils';
 
 const INSPECTOR_PORT_DEFAULT = 9229;
 
@@ -33,15 +36,21 @@ export async function attachProcess() {
     return;
   }
 
+  const userDefaults = readConfig(
+    vscode.workspace.getConfiguration(),
+    Configuration.PickAndAttachDebugOptions,
+  );
+
   const config: INodeAttachConfiguration = {
     ...nodeAttachConfigDefaults,
+    ...userDefaults,
     name: 'process',
     processId,
   };
 
   await resolveProcessId(config, true);
   await vscode.debug.startDebugging(
-    vscode.workspace.getWorkspaceFolder(vscode.Uri.file(config.cwd)),
+    config.cwd ? vscode.workspace.getWorkspaceFolder(vscode.Uri.file(config.cwd)) : undefined,
     config,
   );
 }
@@ -73,16 +82,32 @@ export async function resolveProcessId(config: ResolvingNodeAttachConfiguration,
   delete config.processId;
 
   if (setCwd) {
-    if (vscode.workspace.workspaceFolders?.length === 1) {
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      config.cwd = vscode.workspace.workspaceFolders![0].uri.fsPath;
-    } else if (processId) {
-      const inferredWd = await processTree.getWorkingDirectory(result.pid);
-      if (inferredWd) {
-        config.cwd = await processTree.getWorkingDirectory(result.pid);
-      }
+    const inferredWd = await inferWorkingDirectory(result.pid);
+    if (inferredWd) {
+      config.cwd = inferredWd;
     }
   }
+}
+
+async function inferWorkingDirectory(processId?: number) {
+  const inferredWd = processId && (await processTree.getWorkingDirectory(processId));
+
+  // If we couldn't infer the working directory, just use the first workspace folder
+  if (!inferredWd) {
+    return vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+  }
+
+  const packageRoot = await nearestDirectoryContaining(inferredWd, 'package.json');
+  if (!packageRoot) {
+    return inferredWd;
+  }
+
+  // Find the working directory package root. If the original inferred working
+  // directory was inside a workspace folder, don't go past that.
+  const parentWorkspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(inferredWd));
+  return !parentWorkspaceFolder || isSubdirectoryOf(parentWorkspaceFolder.uri.fsPath, packageRoot)
+    ? packageRoot
+    : parentWorkspaceFolder.uri.fsPath;
 }
 
 /**

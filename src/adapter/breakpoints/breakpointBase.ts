@@ -7,7 +7,7 @@ import Dap from '../../dap/api';
 import { Thread, Script } from '../threads';
 import Cdp from '../../cdp/api';
 import { LogTag } from '../../common/logging';
-import { IUiLocation, base1To0, Source } from '../sources';
+import { IUiLocation, base1To0, Source, SourceFromMap } from '../sources';
 import { urlToRegex, absolutePathToFileUrl } from '../../common/urlUtils';
 
 export type LineColumn = { lineNumber: number; columnNumber: number }; // 1-based
@@ -351,8 +351,8 @@ export abstract class Breakpoint {
 
     // If the source has been mapped in-place, don't set anything by path,
     // we'll depend only on the mapped locations.
-    if (sourceByPath?._compiledToSourceUrl) {
-      const mappedInPlace = [...sourceByPath._compiledToSourceUrl.keys()].some(
+    if (sourceByPath instanceof SourceFromMap) {
+      const mappedInPlace = [...sourceByPath.compiledToSourceUrl.keys()].some(
         s => s.absolutePath() === this.source.path,
       );
 
@@ -370,11 +370,7 @@ export abstract class Breakpoint {
     if (!url) return;
     await this._setByUrl(thread, url, lineColumn);
     if (this.source.path !== url && this.source.path !== undefined) {
-      await this._setByUrl(
-        thread,
-        absolutePathToFileUrl(this.source.path)?.toString()!,
-        lineColumn,
-      );
+      await this._setByUrl(thread, absolutePathToFileUrl(this.source.path), lineColumn);
     }
   }
 
@@ -384,8 +380,8 @@ export abstract class Breakpoint {
    * requests to avoid triggering any logpoint breakpoints multiple times,
    * as would happen if we set a breakpoint both by script and URL.
    */
-  private hasSetOnLocation(script: Partial<Script>, lineColumn: LineColumn): boolean {
-    return this.cdpBreakpoints.some(
+  private hasSetOnLocation(script: Partial<Script>, lineColumn: LineColumn) {
+    return this.cdpBreakpoints.find(
       bp =>
         (script.url &&
           isSetByUrl(bp.args) &&
@@ -400,7 +396,13 @@ export abstract class Breakpoint {
 
   private async _setByUrl(thread: Thread, url: string, lineColumn: LineColumn): Promise<void> {
     lineColumn = base1To0(lineColumn);
-    if (this.hasSetOnLocation({ url }, lineColumn)) {
+
+    const previous = this.hasSetOnLocation({ url }, lineColumn);
+    if (previous) {
+      if (previous.state === CdpReferenceState.Pending) {
+        await previous.done;
+      }
+
       return;
     }
 
@@ -419,7 +421,12 @@ export abstract class Breakpoint {
     lineColumn = base1To0(lineColumn);
 
     // Avoid setting duplicate breakpoints
-    if (this.hasSetOnLocation(script, lineColumn)) {
+    const previous = this.hasSetOnLocation(script, lineColumn);
+    if (previous) {
+      if (previous.state === CdpReferenceState.Pending) {
+        await previous.done;
+      }
+
       return;
     }
 

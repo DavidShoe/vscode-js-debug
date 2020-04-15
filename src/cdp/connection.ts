@@ -5,7 +5,7 @@
 import { ITransport } from './transport';
 import { EventEmitter } from '../common/events';
 import Cdp from './api';
-import { TelemetryReporter } from '../telemetry/telemetryReporter';
+import { ITelemetryReporter } from '../telemetry/telemetryReporter';
 import { LogTag, ILogger } from '../common/logging';
 import { IDisposable } from '../common/disposable';
 
@@ -55,12 +55,12 @@ export default class Connection {
   constructor(
     transport: ITransport,
     private readonly logger: ILogger,
-    private readonly telemetryReporter: TelemetryReporter,
+    private readonly telemetryReporter: ITelemetryReporter,
   ) {
     this._lastId = 0;
     this._transport = transport;
-    this._transport.onmessage = this._onMessage.bind(this);
-    this._transport.onend = this._onTransportClose.bind(this);
+    this._transport.onMessage(([message, time]) => this._onMessage(message, time));
+    this._transport.onEnd(() => this._onTransportClose());
     this._sessions = new Map();
     this._closed = false;
     this._rootSession = new CDPSession(this, '', this.logger);
@@ -108,8 +108,7 @@ export default class Connection {
   _onTransportClose() {
     if (this._closed) return;
     this._closed = true;
-    this._transport.onmessage = undefined;
-    this._transport.onend = undefined;
+    this._transport.dispose();
     for (const session of this._sessions.values()) session._onClose();
     this._sessions.clear();
     this._onDisconnectedEmitter.fire();
@@ -117,7 +116,6 @@ export default class Connection {
 
   close() {
     this._onTransportClose();
-    this._transport.close();
   }
 
   isClosed(): boolean {

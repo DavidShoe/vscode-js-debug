@@ -9,7 +9,11 @@ import {
   commands,
   ConfigurationTarget,
 } from 'vscode';
-import { ITerminalLaunchConfiguration } from '../configuration';
+import {
+  ITerminalLaunchConfiguration,
+  IChromeLaunchConfiguration,
+  INodeAttachConfiguration,
+} from '../configuration';
 
 export const enum Contributions {
   PrettyPrintCommand = 'extension.NAMESPACE(node-debug).prettyPrint',
@@ -56,9 +60,13 @@ export const enum Configuration {
   NpmScriptLens = 'debug.javascript.codelens.npmScripts',
   WarnOnLongPrediction = 'debug.javascript.warnOnLongPrediction',
   TerminalDebugConfig = 'debug.javascript.terminalOptions',
+  PickAndAttachDebugOptions = 'debug.javascript.pickAndAttachOptions',
+  DebugByLinkOptions = 'debug.javascript.debugByLinkOptions',
   SuggestPrettyPrinting = 'debug.javascript.suggestPrettyPrinting',
   AutoServerTunnelOpen = 'debug.javascript.automaticallyTunnelRemoteServer',
 }
+
+export type DebugByLinkState = 'on' | 'off' | 'always';
 
 /**
  * Type map for {@link Configuration} properties.
@@ -68,8 +76,12 @@ export interface IConfigurationTypes {
   [Configuration.NpmScriptLens]: 'all' | 'top' | 'never';
   [Configuration.WarnOnLongPrediction]: boolean;
   [Configuration.TerminalDebugConfig]: Partial<ITerminalLaunchConfiguration>;
+  [Configuration.PickAndAttachDebugOptions]: Partial<INodeAttachConfiguration>;
   [Configuration.SuggestPrettyPrinting]: boolean;
   [Configuration.AutoServerTunnelOpen]: boolean;
+  [Configuration.DebugByLinkOptions]:
+    | DebugByLinkState
+    | ({ enabled: DebugByLinkState } & Partial<IChromeLaunchConfiguration>);
 }
 
 export interface ICommandTypes {

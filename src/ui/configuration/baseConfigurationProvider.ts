@@ -3,7 +3,12 @@
  *--------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { ResolvingConfiguration, AnyLaunchConfiguration } from '../../configuration';
+import {
+  ResolvingConfiguration,
+  AnyLaunchConfiguration,
+  resolveWorkspaceInConfig,
+  removeOptionalWorkspaceFolderUsages,
+} from '../../configuration';
 import { fulfillLoggerOptions } from '../../common/logging';
 import { injectable, inject } from 'inversify';
 import { ExtensionContext } from '../../ioc-extras';
@@ -44,11 +49,11 @@ export abstract class BaseConfigurationProvider<T extends AnyLaunchConfiguration
     folder: vscode.WorkspaceFolder | undefined,
     config: vscode.DebugConfiguration,
     token?: vscode.CancellationToken,
-  ): Promise<T | undefined> {
+  ): Promise<T | null | undefined> {
     const castConfig = config as ResolvingConfiguration<T>;
     try {
       const resolved = await this.resolveDebugConfigurationAsync(folder, castConfig, token);
-      return resolved && this.commonResolution(resolved);
+      return resolved && this.commonResolution(resolved, folder);
     } catch (err) {
       vscode.window.showErrorMessage(err.message, { modal: true });
     }
@@ -95,14 +100,26 @@ export abstract class BaseConfigurationProvider<T extends AnyLaunchConfiguration
     folder: vscode.WorkspaceFolder | undefined,
     config: ResolvingConfiguration<T>,
     token?: vscode.CancellationToken,
-  ): Promise<T | undefined>;
+  ): Promise<T | null | undefined>;
 
   /**
    * Fulfills resolution common between all resolver configs.
    */
-  protected commonResolution(config: T): T {
+  protected commonResolution(config: T, folder: vscode.WorkspaceFolder | undefined): T {
+    if ('__pendingTargetId' in config) {
+      return config;
+    }
+
     config.trace = fulfillLoggerOptions(config.trace, this.extensionContext.logPath);
     config.__workspaceCachePath = this.extensionContext.storagePath;
+    if (folder) {
+      config.__workspaceFolder = folder.uri.fsPath;
+    } else if (config.__workspaceFolder) {
+      config = resolveWorkspaceInConfig(config);
+    } else {
+      config = removeOptionalWorkspaceFolderUsages(config);
+    }
+
     return config;
   }
 

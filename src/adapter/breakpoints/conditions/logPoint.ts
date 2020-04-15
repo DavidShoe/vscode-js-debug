@@ -8,14 +8,8 @@ import { ILogger } from '../../../common/logging';
 import { IBreakpointCondition } from '.';
 import { SimpleCondition } from './simple';
 import { createHash } from 'crypto';
-
-function getSyntaxErrorIn(code: string): Error | void {
-  try {
-    new Function(code);
-  } catch (e) {
-    return e;
-  }
-}
+import { getSyntaxErrorIn } from '../../../common/sourceUtils';
+import Dap from '../../../dap/api';
 
 /**
  * Compiles log point expressions to breakpoints.
@@ -34,8 +28,8 @@ export class LogPointCompiler {
    * Compiles the log point to a
    * @throws {ProtocolError}
    */
-  public compile(logMessage: string): IBreakpointCondition {
-    return new SimpleCondition(this.logMessageToExpression(logMessage));
+  public compile(params: Dap.SourceBreakpoint, logMessage: string): IBreakpointCondition {
+    return new SimpleCondition(params, this.logMessageToExpression(logMessage));
   }
 
   private serializeLogStatements(statements: ReadonlyArray<ts.Statement>) {
@@ -123,10 +117,7 @@ export class LogPointCompiler {
     }
 
     const result = `console.log(${[JSON.stringify(formatParts.join('')), ...args].join(', ')})`;
-    const hash = createHash('sha1')
-      .update(result)
-      .digest('hex')
-      .slice(0, 7);
+    const hash = createHash('sha1').update(result).digest('hex').slice(0, 7);
 
     return result + `\n//# sourceURL=logpoint-${hash}.cdp`;
   }

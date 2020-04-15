@@ -12,22 +12,20 @@ import { Thread, IThreadDelegate, PauseOnExceptionsState } from './threads';
 import { VariableStore } from './variables';
 import { BreakpointManager, generateBreakpointIds } from './breakpoints';
 import { Cdp } from '../cdp/api';
-import { ISourcePathResolver } from '../common/sourcePathResolver';
 import { AnyLaunchConfiguration } from '../configuration';
-import { TelemetryReporter } from '../telemetry/telemetryReporter';
+import { ITelemetryReporter } from '../telemetry/telemetryReporter';
 import { IDeferred, getDeferred } from '../common/promiseUtil';
-import { ISourceMapFactory } from '../common/sourceMaps/sourceMapFactory';
-import { ScriptSkipper, IScriptSkipper } from './scriptSkipper';
+import { ScriptSkipper } from './scriptSkipper/implementation';
 import { IAsyncStackPolicy } from './asyncStackPolicy';
 import { LogTag, ILogger } from '../common/logging';
 import { DisposableList, IDisposable } from '../common/disposable';
 import { Container } from 'inversify';
-import { ISourceMapRepository } from '../common/sourceMaps/sourceMapRepository';
 import { IBreakpointsPredictor } from './breakpointPredictor';
 import { disposeContainer } from '../ioc-extras';
 import { ICompletions } from './completions';
 import { IEvaluator } from './evaluator';
 import { IProfileController } from './profileController';
+import { IScriptSkipper } from './scriptSkipper/scriptSkipper';
 
 const localize = nls.loadMessageBundle();
 
@@ -45,11 +43,8 @@ export class DebugAdapter implements IDisposable {
 
   constructor(
     dap: Dap.Api,
-    rootPath: string | undefined,
-    sourcePathResolver: ISourcePathResolver,
     private readonly asyncStackPolicy: IAsyncStackPolicy,
     private readonly launchConfig: AnyLaunchConfiguration,
-    private readonly _rawTelemetryReporter: TelemetryReporter,
     private readonly _services: Container,
   ) {
     this._configurationDoneDeferred = getDeferred();
@@ -87,16 +82,7 @@ export class DebugAdapter implements IDisposable {
 
     _services.get<IProfileController>(IProfileController).connect(this.dap);
 
-    this.sourceContainer = new SourceContainer(
-      this.dap,
-      _services.get(ISourceMapFactory),
-      _services.get(ILogger),
-      rootPath,
-      sourcePathResolver,
-      _services.get(ISourceMapRepository),
-      _services.get(IScriptSkipper),
-    );
-
+    this.sourceContainer = _services.get(SourceContainer);
     this.breakpointManager = new BreakpointManager(
       this.dap,
       this.sourceContainer,
@@ -105,11 +91,9 @@ export class DebugAdapter implements IDisposable {
       _services.get(IBreakpointsPredictor),
     );
 
-    this._rawTelemetryReporter.onFlush(() => {
-      this._rawTelemetryReporter.report(
-        'breakpointStats',
-        this.breakpointManager.statisticsForTelemetry(),
-      );
+    const telemetry = _services.get<ITelemetryReporter>(ITelemetryReporter);
+    telemetry.onFlush(() => {
+      telemetry.report('breakpointStats', this.breakpointManager.statisticsForTelemetry());
     });
   }
 
@@ -132,7 +116,7 @@ export class DebugAdapter implements IDisposable {
       supportsConfigurationDoneRequest: true,
       supportsFunctionBreakpoints: false,
       supportsConditionalBreakpoints: true,
-      supportsHitConditionalBreakpoints: false,
+      supportsHitConditionalBreakpoints: true,
       supportsEvaluateForHovers: true,
       exceptionBreakpointFilters: [
         {
@@ -168,6 +152,7 @@ export class DebugAdapter implements IDisposable {
       supportsTerminateRequest: false,
       completionTriggerCharacters: ['.', '[', '"', "'"],
       supportsBreakpointLocationsRequest: true,
+      supportsClipboardContext: true,
       //supportsDataBreakpoints: false,
       //supportsReadMemoryRequest: false,
       //supportsDisassembleRequest: false,

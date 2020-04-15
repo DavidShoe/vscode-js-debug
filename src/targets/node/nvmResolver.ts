@@ -4,8 +4,16 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
-import { nvmHomeNotFound, nvmNotFound, nvmVersionNotFound } from '../../dap/errors';
+import {
+  nvmHomeNotFound,
+  nvmNotFound,
+  nvmVersionNotFound,
+  ProtocolError,
+  nvsNotFound,
+} from '../../dap/errors';
 import { injectable } from 'inversify';
+import { exists } from '../../common/fsUtils';
+import { some } from '../../common/promiseUtil';
 
 /**
  * Resolves the location of Node installation querying an nvm installation.
@@ -15,10 +23,23 @@ export interface INvmResolver {
    * Returns a PATH segment to add by loading the given nvm version.
    * Throws a ProtocolError if the requested version is not found in the path.
    */
-  resolveNvmVersionPath(version: string): Promise<string>;
+  resolveNvmVersionPath(version: string): Promise<{ directory: string; binary: string }>;
 }
 
 export const INvmResolver = Symbol('INvmResolver');
+
+interface IVersionStringData {
+  nvsFormat: boolean;
+  remoteName: string;
+  semanticVersion: string;
+  arch: string;
+}
+
+const enum Vars {
+  NvsHome = 'NVS_HOME',
+  WindowsNvmHome = 'NVM_HOME',
+  UnixNvmHome = 'NVM_DIR',
+}
 
 @injectable()
 export class NvmResolver implements INvmResolver {
@@ -28,12 +49,8 @@ export class NvmResolver implements INvmResolver {
     private readonly platform = process.platform,
   ) {}
 
-  public async resolveNvmVersionPath(version: string): Promise<string> {
-    let bin: string | undefined = undefined;
-    let versionManagerName: string | undefined = undefined;
-
-    // first try the Node Version Switcher 'nvs'
-    let nvsHome = this.env['NVS_HOME'];
+  public async resolveNvmVersionPath(version: string) {
+    let nvsHome = this.env[Vars.NvsHome];
     if (!nvsHome) {
       // NVS_HOME is not always set. Probe for 'nvs' directory instead
       const nvsDir =
@@ -45,58 +62,107 @@ export class NvmResolver implements INvmResolver {
       }
     }
 
-    const { nvsFormat, remoteName, semanticVersion, arch } = this.parseVersionString(version);
-
-    if (nvsFormat || nvsHome) {
-      if (!nvsHome) {
-        throw nvmNotFound();
+    let directory: string | undefined = undefined;
+    const versionManagers: string[] = [];
+    const versionData = this.parseVersionString(version);
+    if (versionData.nvsFormat || nvsHome) {
+      directory = await this.resolveNvs(nvsHome, versionData);
+      if (!directory && versionData.nvsFormat) {
+        throw new ProtocolError(nvmVersionNotFound(version, 'nvs'));
       }
-
-      bin = path.join(nvsHome, remoteName, semanticVersion, arch);
-      if (this.platform !== 'win32') {
-        bin = path.join(bin, 'bin');
-      }
-      versionManagerName = 'nvs';
+      versionManagers.push('nvs');
     }
 
-    if (!bin) {
-      // now try the Node Version Manager 'nvm'
+    if (!directory) {
       if (this.platform === 'win32') {
-        const nvmHome = this.env['NVM_HOME'];
-        if (!nvmHome) {
-          throw nvmHomeNotFound();
+        if (this.env[Vars.WindowsNvmHome]) {
+          directory = await this.resolveWindowsNvm(version);
+          versionManagers.push('nvm-windows');
         }
-        bin = this.findBinFolderForVersion(nvmHome, `v${version}`);
-        versionManagerName = 'nvm-windows';
-      } else {
-        // macOS and linux
-        let nvmHome = this.env['NVM_DIR'];
-        if (!nvmHome) {
-          // if NVM_DIR is not set. Probe for '.nvm' directory instead
-          const nvmDir = path.join(this.env['HOME'] || '', '.nvm');
-          if (fs.existsSync(nvmDir)) {
-            nvmHome = nvmDir;
-          }
-        }
-        if (!nvmHome) {
-          throw nvmNotFound();
-        }
-        versionManagerName = 'nvm';
-        bin = this.findBinFolderForVersion(path.join(nvmHome, 'versions', 'node'), `v${version}`);
-        if (bin) {
-          bin = path.join(bin, 'bin');
-        }
+      } else if (this.env[Vars.UnixNvmHome]) {
+        directory = await this.resolveUnixNvm(version);
+        versionManagers.push('nvm');
       }
     }
 
-    if (!bin || !fs.existsSync(bin)) {
-      throw nvmVersionNotFound(version, versionManagerName || 'nvm');
+    if (!versionManagers.length) {
+      throw new ProtocolError(nvmNotFound());
     }
 
-    return bin;
+    if (!directory || !(await exists(directory))) {
+      throw new ProtocolError(nvmVersionNotFound(version, versionManagers.join('/')));
+    }
+
+    return { directory, binary: await this.getBinaryInFolder(directory) };
   }
 
-  private findBinFolderForVersion(dir: string, version: string): string | undefined {
+  /**
+   * Returns the Node binary in the given folder. In recent versions of x64
+   * nvm on windows, nvm installs the exe as "node64" rather than "node".
+   * This detects that.
+   */
+  private async getBinaryInFolder(dir: string) {
+    if (await some(['node64.exe', 'node64'].map(exe => exists(path.join(dir, exe))))) {
+      return 'node64';
+    }
+
+    return 'node';
+  }
+
+  private async resolveNvs(
+    nvsHome: string | undefined,
+    { remoteName, semanticVersion, arch }: IVersionStringData,
+  ) {
+    if (!nvsHome) {
+      throw new ProtocolError(nvsNotFound());
+    }
+
+    const dir = this.findBinFolderForVersion(path.join(nvsHome, remoteName), semanticVersion, d =>
+      fs.existsSync(path.join(d, arch)),
+    );
+
+    if (!dir) {
+      return undefined;
+    }
+
+    return this.platform !== 'win32' ? path.join(dir, arch, 'bin') : path.join(dir, arch);
+  }
+
+  private async resolveUnixNvm(version: string) {
+    // macOS and linux
+    let nvmHome = this.env[Vars.UnixNvmHome];
+    if (!nvmHome) {
+      // if NVM_DIR is not set. Probe for '.nvm' directory instead
+      const nvmDir = path.join(this.env['HOME'] || '', '.nvm');
+      if (await exists(nvmDir)) {
+        nvmHome = nvmDir;
+      }
+    }
+    if (!nvmHome) {
+      throw new ProtocolError(nvmNotFound());
+    }
+    const directory = this.findBinFolderForVersion(
+      path.join(nvmHome, 'versions', 'node'),
+      `v${version}`,
+    );
+
+    return directory ? path.join(directory, 'bin') : undefined;
+  }
+
+  private async resolveWindowsNvm(version: string) {
+    const nvmHome = this.env[Vars.WindowsNvmHome];
+    if (!nvmHome) {
+      throw new ProtocolError(nvmHomeNotFound());
+    }
+
+    return this.findBinFolderForVersion(nvmHome, `v${version}`);
+  }
+
+  private findBinFolderForVersion(
+    dir: string,
+    version: string,
+    extraTest?: (candidateDir: string) => void,
+  ): string | undefined {
     if (!fs.existsSync(dir)) {
       return undefined;
     }
@@ -106,20 +172,21 @@ export class NvmResolver implements INvmResolver {
       return path.join(dir, version);
     }
 
-    for (const candidate of available) {
-      if (candidate.startsWith(`${version}.`)) {
-        return path.join(dir, candidate);
-      }
-    }
+    const best = available
+      .filter(p => p.startsWith(`${version}.`))
+      .sort(semverSortAscending)
+      .filter(p => (extraTest ? extraTest(path.join(dir, p)) : true))
+      .pop();
 
-    return undefined;
+    return best ? path.join(dir, best) : undefined;
   }
 
   /**
    * Parses a node version string into remote name, semantic version, and architecture
    * components. Infers some unspecified components based on configuration.
    */
-  private parseVersionString(versionString: string) {
+  private parseVersionString(versionString: string): IVersionStringData {
+    // Pattern: (flavor?)/(v?)X.X.X/(arch?)
     const versionRegex = /^(([\w-]+)\/)?(v?(\d+(\.\d+(\.\d+)?)?))(\/((x86)|(32)|((x)?64)|(arm\w*)|(ppc\w*)))?$/i;
 
     const match = versionRegex.exec(versionString);
@@ -135,6 +202,22 @@ export class NvmResolver implements INvmResolver {
     return { nvsFormat, remoteName, semanticVersion, arch };
   }
 }
+
+const semverSortAscending = (a: string, b: string) => {
+  const matchA = /([0-9]+)\.([0-9]+)\.([0-9]+)/.exec(a);
+  const matchB = /([0-9]+)\.([0-9]+)\.([0-9]+)/.exec(b);
+  if (!matchA || !matchB) {
+    return (matchB ? -1 : 0) + (matchA ? 1 : 0);
+  }
+
+  const [, aMajor, aMinor, aPatch] = matchA;
+  const [, bMajor, bMinor, bPatch] = matchB;
+  return (
+    Number(aMajor) - Number(bMajor) ||
+    Number(aMinor) - Number(bMinor) ||
+    Number(aPatch) - Number(bPatch)
+  );
+};
 
 function nvsStandardArchName(arch: string) {
   switch (arch) {

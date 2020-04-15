@@ -20,6 +20,7 @@ import { fixInspectFlags } from '../../ui/configurationUtils';
 import { injectable, inject, multiInject } from 'inversify';
 import { IBreakpointsPredictor } from '../../adapter/breakpointPredictor';
 import { ISourceMapMetadata } from '../../common/sourceMaps/sourceMap';
+import { fixDriveLetterAndSlashes } from '../../common/pathUtils';
 
 /**
  * Tries to get the "program" entrypoint from the config. It a program
@@ -181,7 +182,7 @@ export class NodeLauncher extends NodeLauncherBase<INodeLaunchConfiguration> {
         }
 
         const breakpoint = await cdp.Debugger.setBreakpointByUrl({
-          urlRegex: urlToRegex(absolutePathToFileUrl(program) ?? program),
+          urlRegex: urlToRegex(absolutePathToFileUrl(program)),
           lineNumber: 0,
           columnNumber: 0,
         });
@@ -207,6 +208,8 @@ export class NodeLauncher extends NodeLauncherBase<INodeLaunchConfiguration> {
    * @see https://github.com/microsoft/vscode-js-debug/issues/291
    */
   private async tryGetCompiledFile(targetProgram: string) {
+    targetProgram = fixDriveLetterAndSlashes(targetProgram);
+
     const ext = extname(targetProgram);
     if (!ext || ext === '.js') {
       return targetProgram;

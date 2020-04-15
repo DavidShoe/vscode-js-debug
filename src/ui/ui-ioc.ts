@@ -14,6 +14,10 @@ import {
 import { UiProfileManager } from './profiling/uiProfileManager';
 import { DebugSessionTracker } from './debugSessionTracker';
 import { trackDispose } from '../ioc-extras';
+import { TerminalLinkHandler } from './terminalLinkHandler';
+import { ITerminationConditionFactory } from './profiling/terminationCondition';
+import { DurationTerminationConditionFactory } from './profiling/durationTerminationCondition';
+import { ManualTerminationConditionFactory } from './profiling/manualTerminationCondition';
 
 export const registerUiComponents = (container: Container) => {
   [
@@ -30,14 +34,16 @@ export const registerUiComponents = (container: Container) => {
     container.bind(IDebugConfigurationProvider).to(cls);
   });
 
+  container.bind(DebugSessionTracker).toSelf().inSingletonScope().onActivation(trackDispose);
+  container.bind(UiProfileManager).toSelf().inSingletonScope().onActivation(trackDispose);
+  container.bind(TerminalLinkHandler).toSelf().inSingletonScope();
+
   container
-    .bind(DebugSessionTracker)
-    .toSelf()
-    .inSingletonScope()
-    .onActivation(trackDispose);
+    .bind(ITerminationConditionFactory)
+    .to(DurationTerminationConditionFactory)
+    .inSingletonScope();
   container
-    .bind(UiProfileManager)
-    .toSelf()
-    .inSingletonScope()
-    .onActivation(trackDispose);
+    .bind(ITerminationConditionFactory)
+    .to(ManualTerminationConditionFactory)
+    .inSingletonScope();
 };

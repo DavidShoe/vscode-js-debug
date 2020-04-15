@@ -29,13 +29,13 @@ import { GoldenText } from './goldenText';
 import { Logger } from './logger';
 import { getLogFileForTest } from './reporters/logReporterUtils';
 import { TargetOrigin } from '../targets/targetOrigin';
-import { TelemetryReporter } from '../telemetry/telemetryReporter';
 import { ILogger } from '../common/logging';
 import { createTopLevelSessionContainer, createGlobalContainer } from '../ioc';
 import { BrowserLauncher } from '../targets/browser/browserLauncher';
 import { StreamDapTransport } from '../dap/transport';
 import { tmpdir } from 'os';
 import { forceForwardSlashes } from '../common/pathUtils';
+import playwright from 'playwright';
 
 export const kStabilizeNames = ['id', 'threadId', 'sourceReference', 'variablesReference'];
 
@@ -44,6 +44,14 @@ export const testWorkspace = path.join(workspaceFolder, 'testWorkspace');
 export const testSources = path.join(workspaceFolder, 'src');
 export const testFixturesDirName = '.dynamic-testWorkspace';
 export const testFixturesDir = path.join(workspaceFolder, testFixturesDirName);
+
+/**
+ * Replaces the `/private` folder prefix, which OS X likes to add for the
+ * user's tmpdir while require('os').tmpdir() returns the path without
+ * the prefix, which causes mismatch.
+ */
+export const removePrivatePrefix = (folder: string) =>
+  process.platform === 'darwin' ? folder.replace(/^\/private/, '') : folder;
 
 class Stream extends stream.Duplex {
   _write(chunk: any, encoding: string, callback: (err?: Error) => void): void {
@@ -83,12 +91,10 @@ class Session {
 
     this.adapterConnection = new DapConnection(
       new StreamDapTransport(testToAdapter, adapterToTest, logger),
-      new TelemetryReporter(),
       logger,
     );
     const testConnection = new DapConnection(
       new StreamDapTransport(adapterToTest, testToAdapter, logger),
-      new TelemetryReporter(),
       logger,
     );
     this.dap = testConnection.createTestApi();
@@ -306,7 +312,6 @@ export class NodeTestHandle implements ITestHandle {
 
   async load() {
     await this.dap.configurationDone({});
-    await this.dap.attach({});
   }
 }
 
@@ -359,13 +364,7 @@ export class TestRoot {
       });
     });
 
-    this.binder = new Binder(
-      this,
-      this._root.adapterConnection,
-      new TelemetryReporter(),
-      services,
-      new TargetOrigin('0'),
-    );
+    this.binder = new Binder(this, this._root.adapterConnection, services, new TargetOrigin('0'));
 
     this.initialize = this._root._init();
 
@@ -437,7 +436,10 @@ export class TestRoot {
       rootPath: this._workspaceRoot,
       skipNavigateForTest: true,
       trace: { logFile: tmpLogPath },
+      runtimeExecutable:
+        process.platform === 'darwin' ? playwright.chromium.executablePath() : 'stable',
       outFiles: [`${this._workspaceRoot}/**/*.js`, '!**/node_modules/**'],
+      __workspaceFolder: this._workspaceRoot,
       ...options,
     } as AnyChromiumLaunchConfiguration);
 
@@ -588,6 +590,7 @@ export class TestRoot {
           cb();
         }
         this._root.dap.disconnect({});
+        this.binder.dispose();
       });
     });
   }

@@ -3,19 +3,13 @@
  *--------------------------------------------------------*/
 
 import { URL } from 'url';
-import * as fs from 'fs';
 import * as path from 'path';
-import * as http from 'http';
-import * as https from 'https';
 import { fixDriveLetterAndSlashes } from './pathUtils';
 import { AnyChromiumConfiguration } from '../configuration';
 import { escapeRegexSpecialChars } from './stringUtils';
 import { promises as dns } from 'dns';
 import { memoize } from './objUtils';
 import { exists } from './fsUtils';
-import { IDisposable } from './disposable';
-import { TaskCancelledError, NeverCancelled } from './cancellation';
-import { CancellationToken } from 'vscode';
 
 let isCaseSensitive = process.platform !== 'win32';
 
@@ -70,6 +64,11 @@ export const nearestDirectoryContaining = (rootDir: string, file: string) =>
 
 // todo: not super correct, and most node libraries don't handle this accurately
 const knownLoopbacks = new Set<string>(['localhost', '127.0.0.1', '::1']);
+const knownMetaAddresses = new Set<string>([
+  '0.0.0.0',
+  '::',
+  '0000:0000:0000:0000:0000:0000:0000:0000',
+]);
 
 /**
  * Checks if the given address, well-formed loopback IPs. We don't need exotic
@@ -80,18 +79,29 @@ const knownLoopbacks = new Set<string>(['localhost', '127.0.0.1', '::1']);
 const isLoopbackIp = (ipOrLocalhost: string) => knownLoopbacks.has(ipOrLocalhost.toLowerCase());
 
 /**
+ * If given a URL, returns its hostname.
+ */
+const getHostnameFromMaybeUrl = (maybeUrl: string) => {
+  try {
+    const url = new URL(maybeUrl);
+    // replace brackets in ipv6 addresses:
+    return url.hostname.replace(/^\[|\]$/g, '');
+  } catch {
+    return maybeUrl;
+  }
+};
+
+/**
+ * Gets whether the IP address is a meta-address like 0.0.0.0.
+ */
+export const isMetaAddress = (address: string) =>
+  knownMetaAddresses.has(getHostnameFromMaybeUrl(address));
+
+/**
  * Gets whether the IP is a loopback address.
  */
 export const isLoopback = memoize(async (address: string) => {
-  let ipOrHostname: string;
-  try {
-    const url = new URL(address);
-    // replace brackets in ipv6 addresses:
-    ipOrHostname = url.hostname.replace(/^\[|\]$/g, '');
-  } catch {
-    ipOrHostname = address;
-  }
-
+  const ipOrHostname = getHostnameFromMaybeUrl(address);
   if (isLoopbackIp(ipOrHostname)) {
     return true;
   }
@@ -103,75 +113,6 @@ export const isLoopback = memoize(async (address: string) => {
     return false;
   }
 });
-
-/**
- * Fetches JSON content from the given URL.
- */
-export async function fetchJson<T>(url: string, cancellationToken: CancellationToken): Promise<T> {
-  const data = await fetch(url, cancellationToken);
-  return JSON.parse(data);
-}
-
-/**
- * Fetches content from the given URL.
- */
-export async function fetch(
-  url: string,
-  cancellationToken: CancellationToken = NeverCancelled,
-): Promise<string> {
-  if (url.startsWith('data:')) {
-    const prefix = url.substring(0, url.indexOf(','));
-    const match = prefix.match(/data:[^;]*(;[^;]*)?(;[^;]*)?(;[^;]*)?/);
-    if (!match) throw new Error(`Malformed data url prefix '${prefix}'`);
-    const params = new Set<string>(match.slice(1));
-    const data = url.substring(prefix.length + 1);
-    const result = Buffer.from(data, params.has(';base64') ? 'base64' : undefined).toString();
-    return result;
-  }
-
-  const absolutePath = isAbsolute(url) ? url : fileUrlToAbsolutePath(url);
-  if (absolutePath) {
-    return new Promise<string>((fulfill, reject) => {
-      fs.readFile(absolutePath, (err, data) => {
-        if (err) reject(err);
-        else fulfill(data.toString());
-      });
-    });
-  }
-
-  const isSecure = !url.startsWith('http://');
-  const driver = isSecure ? https : http;
-  const targetAddressIsLoopback = await isLoopback(url);
-  const disposables: IDisposable[] = [];
-
-  return new Promise<string>((fulfill, reject) => {
-    const requestOptions: https.RequestOptions = {};
-
-    if (isSecure && targetAddressIsLoopback) {
-      requestOptions.rejectUnauthorized = false;
-    }
-
-    const request = driver.get(url, requestOptions, response => {
-      disposables.push(cancellationToken.onCancellationRequested(() => response.destroy()));
-
-      let data = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk: string) => (data += chunk));
-      response.on('end', () => fulfill(data));
-      response.on('error', reject);
-    });
-
-    disposables.push(
-      cancellationToken.onCancellationRequested(() => {
-        request.destroy();
-        reject(new TaskCancelledError(`Cancelled GET ${url}`));
-      }),
-    );
-
-    request.on('error', reject);
-    request.end();
-  }).finally(() => disposables.forEach(d => d.dispose()));
-}
 
 export function completeUrl(base: string | undefined, relative: string): string | undefined {
   try {
@@ -276,11 +217,11 @@ export function fileUrlToNetworkPath(urlOrPath: string): string {
 }
 
 // TODO: this does not escape/unescape special characters, but it should.
-export function absolutePathToFileUrl(absolutePath: string): string | undefined {
-  try {
-    if (process.platform === 'win32') return 'file:///' + platformPathToUrlPath(absolutePath);
-    return 'file://' + platformPathToUrlPath(absolutePath);
-  } catch (e) {}
+export function absolutePathToFileUrl(absolutePath: string): string {
+  if (process.platform === 'win32') {
+    return 'file:///' + platformPathToUrlPath(absolutePath);
+  }
+  return 'file://' + platformPathToUrlPath(absolutePath);
 }
 
 /**
@@ -350,7 +291,7 @@ export function maybeAbsolutePathToFileUrl(
     platformPathToPreferredCase(sourceUrl).startsWith(rootPath) &&
     !isValidUrl(sourceUrl)
   )
-    return absolutePathToFileUrl(sourceUrl) || sourceUrl;
+    return absolutePathToFileUrl(sourceUrl);
   return sourceUrl;
 }
 

@@ -12,6 +12,7 @@ import { IDisposable } from '../../common/disposable';
 import { NodeAttacherBase } from './nodeAttacherBase';
 import { injectable } from 'inversify';
 import { retryGetWSEndpoint } from '../browser/spawn/endpoints';
+import { LogTag } from '../../common/logging';
 
 /**
  * Attaches to an instance of VS Code for extension debugging.
@@ -44,7 +45,7 @@ export class ExtensionHostAttacher extends NodeAttacherBase<IExtensionHostConfig
   protected async launchProgram(
     runData: IRunData<IExtensionHostConfiguration>,
   ): Promise<string | void> {
-    const inspectorUrl = await retryGetWSEndpoint(
+    const inspectorURL = await retryGetWSEndpoint(
       `http://localhost:${runData.params.port}`,
       runData.context.cancellationToken,
     );
@@ -52,7 +53,7 @@ export class ExtensionHostAttacher extends NodeAttacherBase<IExtensionHostConfig
     const wd = spawnWatchdog(await this.resolveNodePath(runData.params), {
       ipcAddress: runData.serverAddress,
       scriptName: 'Extension Host',
-      inspectorURL: inspectorUrl!,
+      inspectorURL,
       waitForDebugger: true,
       dynamicAttach: true,
     });
@@ -73,6 +74,7 @@ export class ExtensionHostAttacher extends NodeAttacherBase<IExtensionHostConfig
     cdp: Cdp.Api,
     run: IRunData<IExtensionHostConfiguration>,
   ): Promise<ReadonlyArray<IDisposable>> {
+    this.setEnvironmentVariables(cdp, run);
     const telemetry = await this.gatherTelemetry(cdp, run);
 
     // Monitor the process ID we read from the telemetry. Once the VS Code
@@ -89,5 +91,31 @@ export class ExtensionHostAttacher extends NodeAttacherBase<IExtensionHostConfig
     }
 
     return [];
+  }
+
+  private async setEnvironmentVariables(cdp: Cdp.Api, run: IRunData<IExtensionHostConfiguration>) {
+    if (!run.params.autoAttachChildProcesses) {
+      return;
+    }
+
+    const vars = this.resolveEnvironment(run).merge({
+      NODE_INSPECTOR_PPID: '0',
+    });
+
+    const result = await cdp.Runtime.evaluate({
+      contextId: 1,
+      returnByValue: true,
+      expression: `Object.assign(process.env, ${JSON.stringify(vars.defined())})`,
+    });
+
+    if (!result) {
+      this.logger.error(LogTag.RuntimeTarget, 'Undefined result setting child environment vars');
+    } else if (result.exceptionDetails) {
+      this.logger.error(
+        LogTag.RuntimeTarget,
+        'Error setting child environment vars',
+        result.exceptionDetails,
+      );
+    }
   }
 }

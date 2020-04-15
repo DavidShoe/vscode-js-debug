@@ -10,7 +10,8 @@ const localize = nls.loadMessageBundle();
 export const enum ErrorCodes {
   SilentError = 9222,
   UserError,
-  NvmNotFound,
+  NvmOrNvsNotFound,
+  NvsNotFound,
   NvmHomeNotFound,
   CannotLaunchInTerminal,
   CannotLoadEnvironmentVariables,
@@ -22,6 +23,8 @@ export const enum ErrorCodes {
   AsyncScopesNotAvailable,
   ProfileCaptureError,
   InvalidConcurrentProfile,
+  InvalidBreakpointCondition,
+  ReplError,
 }
 
 export function reportToConsole(dap: Dap.Api, error: string) {
@@ -57,9 +60,18 @@ export const nvmNotFound = () =>
   createUserError(
     localize(
       'NVS_HOME.not.found.message',
-      "Attribute 'runtimeVersion' requires Node.js version manager 'nvs'.",
+      "Attribute 'runtimeVersion' requires Node.js version manager 'nvs' or 'nvm' to be installed.",
     ),
-    ErrorCodes.NvmNotFound,
+    ErrorCodes.NvmOrNvsNotFound,
+  );
+
+export const nvsNotFound = () =>
+  createUserError(
+    localize(
+      'NVS_HOME.not.found.message',
+      "Attribute 'runtimeVersion' with a flavor/architecture requires 'nvs' to be installed.",
+    ),
+    ErrorCodes.NvsNotFound,
   );
 
 export const nvmHomeNotFound = () =>
@@ -75,7 +87,7 @@ export const nvmVersionNotFound = (version: string, versionManager: string) =>
   createUserError(
     localize(
       'runtime.version.not.found.message',
-      "Node.js version '{0}' not installed for '{1}'.",
+      "Node.js version '{0}' not installed using version manager {1}.",
       version,
       versionManager,
     ),
@@ -140,6 +152,8 @@ export const invalidConcurrentProfile = () =>
     ErrorCodes.InvalidConcurrentProfile,
   );
 
+export const replError = (message: string) => createSilentError(message, ErrorCodes.ReplError);
+
 export const browserNotFound = (
   browserType: string,
   requested: string,
@@ -167,11 +181,20 @@ export const invalidLogPointSyntax = (error: string) =>
 
 export const asyncScopesNotAvailable = () =>
   createSilentError(
+    localize('asyncScopesNotAvailable', 'Variables not available in async stacks'),
+    ErrorCodes.AsyncScopesNotAvailable,
+  );
+
+export const invalidBreakPointCondition = (params: Dap.SourceBreakpoint, error: string) =>
+  createUserError(
     localize(
-      'asyncScopesNotAvailable',
-      'Variables not available in async stacks',
-      ErrorCodes.AsyncScopesNotAvailable,
+      'breakpointSyntaxError',
+      'Syntax error setting breakpoint with condition {0} on line {1}: {2}',
+      JSON.stringify(params.condition),
+      params.line,
+      error,
     ),
+    ErrorCodes.InvalidBreakpointCondition,
   );
 
 export class ProtocolError extends Error {
@@ -188,14 +211,3 @@ export class ProtocolError extends Error {
  */
 export const isDapError = (value: unknown): value is Dap.Error =>
   typeof value === 'object' && !!value && '__errorMarker' in value;
-
-/**
- * Use this error to fail a request with an error that came from user code or the runtime.
- * The original stack will be preserved, instead of attaching the stack from debug adapter code.
- */
-export class ExternalError extends Error {
-  __externalError = true;
-}
-
-export const isExternalError = (value: unknown): value is ExternalError =>
-  typeof value === 'object' && !!value && '__externalError' in value;

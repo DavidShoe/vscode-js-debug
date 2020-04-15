@@ -9,7 +9,6 @@ import * as fs from 'fs';
 import { EventEmitter, IDisposable } from '../../common/events';
 import Cdp from '../../cdp/api';
 import Connection from '../../cdp/connection';
-import { PipeTransport } from '../../cdp/transport';
 import {
   ILauncher,
   ITarget,
@@ -25,11 +24,12 @@ import { IProgram } from './program';
 import { ProtocolError, cannotLoadEnvironmentVars } from '../../dap/errors';
 import { ObservableMap } from '../../common/datastructure/observableMap';
 import { findInPath } from '../../common/pathUtils';
-import { TelemetryReporter } from '../../telemetry/telemetryReporter';
+import { ITelemetryReporter } from '../../telemetry/telemetryReporter';
 import { NodePathProvider, INodePathProvider } from './nodePathProvider';
 import { ILogger } from '../../common/logging';
 import { inject, injectable } from 'inversify';
 import { CancellationTokenSource } from '../../common/cancellation';
+import { RawPipeTransport } from '../../cdp/rawPipeTransport';
 
 /**
  * Telemetry received from the nested process.
@@ -296,7 +296,7 @@ export abstract class NodeLauncherBase<T extends AnyNodeConfiguration> implement
     return {};
   }
 
-  protected async _startServer(telemetryReporter: TelemetryReporter) {
+  protected async _startServer(telemetryReporter: ITelemetryReporter) {
     const pipePrefix = process.platform === 'win32' ? '\\\\.\\pipe\\' : os.tmpdir();
     const pipe = path.join(pipePrefix, `node-cdp.${process.pid}-${++counter}.sock`);
     const server = await new Promise<net.Server>((resolve, reject) => {
@@ -324,7 +324,7 @@ export abstract class NodeLauncherBase<T extends AnyNodeConfiguration> implement
     this.serverConnections = [];
   }
 
-  protected async _startSession(socket: net.Socket, telemetryReporter: TelemetryReporter) {
+  protected async _startSession(socket: net.Socket, telemetryReporter: ITelemetryReporter) {
     const { connection, cdp, targetInfo } = await this.acquireTarget(socket, telemetryReporter);
     if (!this.run) {
       // if we aren't running a session, discard the socket.
@@ -338,6 +338,7 @@ export abstract class NodeLauncherBase<T extends AnyNodeConfiguration> implement
       connection,
       cdp,
       targetInfo,
+      this.logger,
       this.createLifecycle(cdp, this.run, targetInfo),
     );
 
@@ -350,9 +351,9 @@ export abstract class NodeLauncherBase<T extends AnyNodeConfiguration> implement
    * Acquires the CDP session and target info from the connecting socket.
    */
 
-  protected async acquireTarget(socket: net.Socket, rawTelemetryReporter: TelemetryReporter) {
+  protected async acquireTarget(socket: net.Socket, rawTelemetryReporter: ITelemetryReporter) {
     const connection = new Connection(
-      new PipeTransport(this.logger, socket),
+      new RawPipeTransport(this.logger, socket),
       this.logger,
       rawTelemetryReporter,
     );
@@ -370,7 +371,7 @@ export abstract class NodeLauncherBase<T extends AnyNodeConfiguration> implement
    * since Node does not support paths with spaces in them < 13 (nodejs/node#12971),
    * so if our installation path has spaces, we need to fall back somewhere.
    */
-  private getBootloaderFile(cwd: string) {
+  private getBootloaderFile(cwd?: string) {
     const targetPath = path.join(__dirname, 'bootloader.js');
 
     // 1. If the path doesn't have a space, we're OK to use it.
@@ -380,7 +381,7 @@ export abstract class NodeLauncherBase<T extends AnyNodeConfiguration> implement
 
     // 2. Try the tmpdir, if it's space-free.
     const contents = `require(${JSON.stringify(targetPath)})`;
-    if (!os.tmpdir().includes(' ')) {
+    if (!os.tmpdir().includes(' ') || !cwd) {
       const tmpPath = path.join(os.tmpdir(), 'vscode-js-debug-bootloader.js');
       fs.writeFileSync(tmpPath, contents);
       return { path: tmpPath, dispose: () => fs.unlinkSync(tmpPath) };

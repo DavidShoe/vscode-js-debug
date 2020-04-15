@@ -27,7 +27,7 @@ import {
 } from './telemetry/unhandledErrorReporter';
 import { ITargetOrigin } from './targets/targetOrigin';
 import { IAsyncStackPolicy, getAsyncStackPolicy } from './adapter/asyncStackPolicy';
-import { TelemetryReporter } from './telemetry/telemetryReporter';
+import { ITelemetryReporter } from './telemetry/telemetryReporter';
 import { mapValues } from './common/objUtils';
 import * as os from 'os';
 import { delay } from './common/promiseUtil';
@@ -64,7 +64,6 @@ export class Binder implements IDisposable {
   constructor(
     delegate: IBinderDelegate,
     connection: DapConnection,
-    private readonly telemetryReporter: TelemetryReporter,
     private readonly _rootServices: Container,
     targetOrigin: ITargetOrigin,
   ) {
@@ -73,9 +72,13 @@ export class Binder implements IDisposable {
     this._targetOrigin = targetOrigin;
     this._disposables = [
       this._onTargetListChangedEmitter,
-      this.telemetryReporter,
-      installUnhandledErrorReporter(_rootServices.get(ILogger), telemetryReporter),
+      installUnhandledErrorReporter(
+        _rootServices.get(ILogger),
+        _rootServices.get(ITelemetryReporter),
+      ),
     ];
+
+    connection.attachTelemetry(_rootServices.get(ITelemetryReporter));
 
     this._dap.then(dap => {
       dap.on('initialize', async clientCapabilities => {
@@ -147,7 +150,11 @@ export class Binder implements IDisposable {
   }
 
   private async _disconnect() {
-    await Promise.all([...this.getLaunchers()].map(l => l.disconnect()));
+    if (!this._launchers) {
+      return;
+    }
+
+    await Promise.all([...this._launchers].map(l => l.disconnect()));
 
     const didTerminate = () => !this.targetList.length && this._terminationCount === 0;
     if (didTerminate()) {
@@ -191,6 +198,7 @@ export class Binder implements IDisposable {
       type: rawParams.type,
       request: rawParams.request,
       name: '<string>',
+      __workspaceFolder: '<workspace>',
     } as AnyResolvingConfiguration) as unknown) as { [key: string]: unknown };
 
     // Sanitization function that strips non-default strings from the launch
@@ -211,7 +219,7 @@ export class Binder implements IDisposable {
       return value;
     };
 
-    this.telemetryReporter.report('launch', {
+    this._rootServices.get<ITelemetryReporter>(ITelemetryReporter).report('launch', {
       type: rawParams.type,
       request: rawParams.request,
       os: `${os.platform()} ${os.arch()}`,
@@ -269,7 +277,7 @@ export class Binder implements IDisposable {
     let result: ILaunchResult;
     try {
       result = await launcher.launch(params, {
-        telemetryReporter: this.telemetryReporter,
+        telemetryReporter: this._rootServices.get(ITelemetryReporter),
         cancellationToken,
         targetOrigin: this._targetOrigin,
         dap: await this._dap,
@@ -324,13 +332,21 @@ export class Binder implements IDisposable {
     return result;
   }
 
-  async attach(target: ITarget, launcher: ILauncher) {
-    if (!target.canAttach()) return;
+  public async attach(target: ITarget, launcher: ILauncher) {
+    if (!this._launchParams) {
+      throw new Error('Cannot launch before params have been set');
+    }
+
+    if (!target.canAttach()) {
+      return;
+    }
     const cdp = await target.attach();
-    if (!cdp) return;
+    if (!cdp) {
+      return;
+    }
     const connection = await this._delegate.acquireDap(target);
     const dap = await connection.dap();
-    const launchParams = this._launchParams!;
+    const launchParams = this._launchParams;
 
     if (!this._asyncStackPolicy) {
       this._asyncStackPolicy = getAsyncStackPolicy(launchParams.showAsyncStacks);
@@ -340,18 +356,11 @@ export class Binder implements IDisposable {
     const parentContainer =
       (parentTarget && this._serviceTree.get(parentTarget)) || this._rootServices;
     const container = createTargetContainer(parentContainer, target, dap, cdp);
+    connection.attachTelemetry(container.get(ITelemetryReporter));
     this._serviceTree.set(target, parentContainer);
 
     // todo: move scriptskipper into services collection
-    const debugAdapter = new DebugAdapter(
-      dap,
-      this._launchParams?.rootPath || undefined,
-      target.sourcePathResolver(),
-      this._asyncStackPolicy,
-      launchParams,
-      this.telemetryReporter,
-      container,
-    );
+    const debugAdapter = new DebugAdapter(dap, this._asyncStackPolicy, launchParams, container);
     const thread = debugAdapter.createThread(target.name(), cdp, target);
     this._threads.set(target, { thread, debugAdapter });
     const startThread = async () => {
@@ -364,7 +373,7 @@ export class Binder implements IDisposable {
     } else {
       dap.on('attach', startThread);
       dap.on('disconnect', async () => {
-        this.telemetryReporter.flush();
+        this._rootServices.get<ITelemetryReporter>(ITelemetryReporter).flush();
         if (target.canStop()) target.stop();
         return {};
       });

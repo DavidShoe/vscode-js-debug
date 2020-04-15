@@ -10,11 +10,20 @@ import { ICdpApi } from '../../cdp/connection';
 import { EventEmitter } from '../../common/events';
 import { ProtocolError, profileCaptureError } from '../../dap/errors';
 import { FS, FsPromises } from '../../ioc-extras';
+import { SourceContainer } from '../sources';
+import { AnyLaunchConfiguration } from '../../configuration';
+import Dap from '../../dap/api';
 
 const localize = nls.loadMessageBundle();
 
 export interface IBasicProfileParams {
   precise: boolean;
+}
+
+interface IEmbeddedLocation {
+  lineNumber: number;
+  columnNumber: number;
+  source: Dap.Source;
 }
 
 /**
@@ -38,6 +47,8 @@ export class BasicCpuProfiler implements IProfiler<IBasicProfileParams> {
   constructor(
     @inject(ICdpApi) private readonly cdp: Cdp.Api,
     @inject(FS) private readonly fs: FsPromises,
+    @inject(SourceContainer) private readonly sources: SourceContainer,
+    @inject(AnyLaunchConfiguration) private readonly launchConfig: AnyLaunchConfiguration,
   ) {}
 
   /**
@@ -50,7 +61,13 @@ export class BasicCpuProfiler implements IProfiler<IBasicProfileParams> {
       throw new ProtocolError(profileCaptureError());
     }
 
-    return new BasicProfile(this.cdp, this.fs, options);
+    return new BasicProfile(
+      this.cdp,
+      this.fs,
+      this.sources,
+      options,
+      this.launchConfig.__workspaceFolder,
+    );
   }
 }
 
@@ -71,7 +88,9 @@ class BasicProfile implements IProfile {
   constructor(
     private readonly cdp: Cdp.Api,
     private readonly fs: FsPromises,
+    private readonly sources: SourceContainer,
     private readonly options: StartProfileParams<IBasicProfileParams>,
+    private readonly workspaceFolder: string,
   ) {}
 
   /**
@@ -95,6 +114,92 @@ class BasicProfile implements IProfile {
     }
 
     await this.dispose();
-    await this.fs.writeFile(this.options.file, JSON.stringify(result.profile));
+
+    const annotated = await this.annotateSources(result.profile);
+    await this.fs.writeFile(this.options.file, JSON.stringify(annotated));
+  }
+
+  /**
+   * Adds source locations
+   */
+  private async annotateSources(profile: Cdp.Profiler.Profile) {
+    let locationIdCounter = 0;
+    const locationsByRef = new Map<
+      string,
+      { id: number; callFrame: Cdp.Runtime.CallFrame; locations: Promise<IEmbeddedLocation[]> }
+    >();
+
+    const getLocationIdFor = (callFrame: Cdp.Runtime.CallFrame) => {
+      const ref = [
+        callFrame.functionName,
+        callFrame.url,
+        callFrame.scriptId,
+        callFrame.lineNumber,
+        callFrame.columnNumber,
+      ].join(':');
+
+      const existing = locationsByRef.get(ref);
+      if (existing) {
+        return existing.id;
+      }
+
+      const id = locationIdCounter++;
+      locationsByRef.set(ref, {
+        id,
+        callFrame,
+        locations: (async () => {
+          const source = await this.sources.scriptsById.get(callFrame.scriptId)?.source;
+          if (!source) {
+            return [];
+          }
+
+          return Promise.all(
+            this.sources
+              .currentSiblingUiLocations({
+                lineNumber: callFrame.lineNumber + 1,
+                columnNumber: callFrame.columnNumber + 1,
+                source,
+              })
+              .map(async loc => ({ ...loc, source: await loc.source.toDapShallow() })),
+          );
+        })(),
+      });
+
+      return id;
+    };
+
+    const nodes = profile.nodes.map(node => ({
+      ...node,
+      locationId: getLocationIdFor(node.callFrame),
+      positionTicks: node.positionTicks?.map(tick => ({
+        ...tick,
+        // weirdly, line numbers here are 1-based, not 0-based. The position tick
+        // only gives line-level granularity, so 'mark' the entire range of source
+        // code the tick refers to
+        startLocationId: getLocationIdFor({
+          ...node.callFrame,
+          lineNumber: tick.line - 1,
+          columnNumber: 0,
+        }),
+        endLocationId: getLocationIdFor({
+          ...node.callFrame,
+          lineNumber: tick.line,
+          columnNumber: 0,
+        }),
+      })),
+    }));
+
+    return {
+      ...profile,
+      nodes,
+      $vscode: {
+        rootPath: this.workspaceFolder,
+        locations: await Promise.all(
+          [...locationsByRef.values()]
+            .sort((a, b) => a.id - b.id)
+            .map(async l => ({ callFrame: l.callFrame, locations: await l.locations })),
+        ),
+      },
+    };
   }
 }

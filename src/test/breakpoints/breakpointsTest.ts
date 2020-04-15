@@ -510,6 +510,7 @@ describe('breakpoints', () => {
     itIntegrates('ignores bp with invalid condition', async ({ r }) => {
       // Breakpoint in separate script set before launch.
       const p = await r.launchUrl('condition.html');
+      const output = p.dap.once('output');
       const source: Dap.Source = {
         path: p.workspacePath('web/condition.js'),
       };
@@ -518,6 +519,8 @@ describe('breakpoints', () => {
         breakpoints: [{ line: 2, column: 0, condition: ')(}{][.&' }],
       });
       p.load();
+
+      await r.log(await output); // an error message
       await waitForPause(p); // falls through to debugger statement
       p.assertLog();
     });
@@ -693,6 +696,29 @@ describe('breakpoints', () => {
       await waitForPause(p);
       p.assertLog();
     });
+  });
+
+  itIntegrates('gets correct line number with babel code (#407)', async ({ r }) => {
+    await r.initialize;
+    const cwd = join(testWorkspace, 'babelLineNumbers');
+
+    const handle = await r.runScript(join(cwd, `compiled.js`));
+    await handle.dap.setBreakpoints({
+      source: { path: join(cwd, 'compiled.js') },
+      breakpoints: [{ line: 1 }],
+    });
+
+    await handle.dap.setBreakpoints({
+      source: { path: join(cwd, 'app.tsx') },
+      breakpoints: [{ line: 2 }],
+    });
+
+    handle.load();
+
+    const { threadId } = handle.log(await handle.dap.once('stopped'));
+    await handle.dap.continue({ threadId });
+    await waitForPause(handle);
+    handle.assertLog({ substring: true });
   });
 
   itIntegrates('vue projects', async ({ r }) => {

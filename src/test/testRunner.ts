@@ -9,6 +9,7 @@ import { join } from 'path';
 import 'reflect-metadata';
 
 use(require('chai-subset'));
+use(require('chai-as-promised'));
 
 function setupCoverage() {
   const NYC = require('nyc');
@@ -36,6 +37,11 @@ export async function run(): Promise<void> {
     timeout: 10 * 1000,
     ...JSON.parse(process.env.PWA_TEST_OPTIONS || '{}'),
   };
+
+  const grep = mochaOpts.grep || mochaOpts.g;
+  if (grep) {
+    mochaOpts.grep = new RegExp(grep, 'i');
+  }
 
   // Paths are relative to Mocha
   const logTestReporter = '../../../out/src/test/reporters/logTestReporter';

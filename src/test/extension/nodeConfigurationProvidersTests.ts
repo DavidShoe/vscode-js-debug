@@ -102,7 +102,7 @@ describe('NodeDebugConfigurationProvider', () => {
       });
 
       const result = (await provider.resolveDebugConfiguration(folder, emptyRequest))!;
-      result.cwd = result.cwd.toLowerCase();
+      result.cwd = result.cwd!.toLowerCase();
 
       expect(result).to.containSubset({
         type: 'pwa-node',
@@ -120,7 +120,7 @@ describe('NodeDebugConfigurationProvider', () => {
       });
 
       const result = (await provider.resolveDebugConfiguration(folder, emptyRequest))!;
-      result.cwd = result.cwd.toLowerCase();
+      result.cwd = result.cwd!.toLowerCase();
 
       expect(result).to.containSubset({
         type: 'pwa-node',
@@ -191,7 +191,10 @@ describe('NodeDebugConfigurationProvider', () => {
       'hello.js': '',
     });
 
-    nvmResolver.resolveNvmVersionPath.resolves('/my/node/location');
+    nvmResolver.resolveNvmVersionPath.resolves({
+      directory: '/my/node/location',
+      binary: 'node64',
+    });
     const result = await provider.resolveDebugConfiguration(folder, {
       type: DebugType.Node,
       name: '',
@@ -202,6 +205,7 @@ describe('NodeDebugConfigurationProvider', () => {
     });
 
     expect(result).to.containSubset({
+      runtimeExecutable: 'node64',
       env: {
         hello: 'world',
         PATH: '/usr/bin:/my/node/location',

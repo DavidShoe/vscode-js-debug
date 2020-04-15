@@ -39,7 +39,8 @@
       "runtimeExecutable": "${execPath}",
       "args": [
         "--enable-proposed-api=ms-vscode.js-debug",
-        "--extensionDevelopmentPath=${workspaceFolder}/out"
+        "--extensionDevelopmentPath=${workspaceFolder}/out",
+        "--extensionDevelopmentPath=${workspaceFolder}/../vscode-js-profile-visualizer/packages/vscode-js-profile-table",
       ],
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
@@ -86,6 +87,9 @@
         "--extensionDevelopmentPath=${workspaceFolder}/../vscode-js-debug-companion",
         "--extensionDevelopmentPath=${workspaceFolder}/out"
       ],
+      "env": {
+        "JS_DEBUG_USE_COMPANION": "1"
+      },
       "trace": true,
       "resolveSourceMapLocations": [
         "${workspaceFolder}/**",
@@ -99,8 +103,8 @@
     },
 		{
 			"name": "Run Tests",
-			"type": "extensionHost",
-			"request": "launch",
+			"type": "pwa-extensionHost",
+      "request": "launch",
       "runtimeExecutable": "${execPath}",
       "skipFiles": ["<node_internals>/**"],
 			"args": [

@@ -470,6 +470,11 @@ const nodeLaunchConfig: IDebugger<INodeLaunchConfiguration> = {
   ],
   configurationAttributes: {
     ...nodeBaseConfigurationAttributes,
+    cwd: {
+      type: 'string',
+      description: refString('node.launch.cwd.description'),
+      default: '${workspaceFolder}',
+    },
     program: {
       type: 'string',
       description: refString('node.launch.program.description'),
@@ -712,6 +717,19 @@ const chromeLaunchConfig: IDebugger<IChromeLaunchConfiguration> = {
       description: refString('browser.cwd.description'),
       default: null,
     },
+    browserLaunchLocation: {
+      description: refString('browser.browserLaunchLocation.description'),
+      default: null,
+      oneOf: [
+        {
+          type: 'null',
+        },
+        {
+          type: 'string',
+          enum: ['ui', 'workspace'],
+        },
+      ],
+    },
   },
 };
 
@@ -861,6 +879,32 @@ const configurationSchema: ConfigurationAttributes<IConfigurationTypes> = {
     type: 'boolean',
     description: refString('configuration.automaticallyTunnelRemoteServer'),
     default: true,
+  },
+  [Configuration.DebugByLinkOptions]: {
+    default: 'on',
+    description: refString('configuration.debugByLinkOptions'),
+    oneOf: [
+      {
+        type: 'string',
+        enum: ['on', 'off', 'always'],
+      },
+      {
+        type: 'object',
+        properties: {
+          ...chromeLaunchConfig.configurationAttributes,
+          enabled: {
+            type: 'string',
+            enum: ['on', 'off', 'always'],
+          },
+        } as { [key: string]: JSONSchema6 },
+      },
+    ],
+  },
+  [Configuration.PickAndAttachDebugOptions]: {
+    type: 'object',
+    default: {},
+    markdownDescription: refString('configuration.pickAndAttachOptions'),
+    properties: nodeAttachConfig.configurationAttributes as { [key: string]: JSONSchema6 },
   },
 };
 

@@ -18,6 +18,7 @@ import { spawn, ChildProcess } from 'child_process';
 import Dap from '../../dap/api';
 import { delay } from '../../common/promiseUtil';
 import { nodeLaunchConfigDefaults, INodeLaunchConfiguration } from '../../configuration';
+import split from 'split2';
 
 describe('node runtime', () => {
   async function waitForPause(p: ITestHandle) {
@@ -301,6 +302,23 @@ describe('node runtime', () => {
       await waitForPause(reconnect);
       handle.assertLog({ substring: true });
     });
+
+    itIntegrates('does not restart if killed', async ({ r }) => {
+      createFileTree(testFixturesDir, {
+        'test.js': ['setInterval(() => { debugger; }, 100)'],
+      });
+
+      child = spawn('node', ['--inspect', join(testFixturesDir, 'test')], { stdio: 'pipe' });
+      const lines: string[] = [];
+      child.stderr?.pipe(split()).on('data', line => lines.push(line));
+
+      const handle = await r.attachNode(0, { port: 9229, restart: true });
+      await handle.dap.once('stopped');
+      await r.rootDap().disconnect({});
+
+      await delay(1000);
+      expect(lines.filter(l => l.includes('Debugger attached'))).to.have.lengthOf(1);
+    });
   });
 
   describe('child processes', () => {
@@ -424,5 +442,18 @@ describe('node runtime', () => {
     } as INodeLaunchConfiguration);
 
     expect(result).to.include('Can\'t find Node.js binary "does-not-exist"');
+  });
+
+  itIntegrates('scripts with http urls', async ({ r }) => {
+    await r.initialize;
+    const cwd = join(testWorkspace, 'web', 'urlSourcemap');
+    const handle = await r.runScript(join(cwd, 'index.js'), {
+      cwd: testWorkspace,
+      skipFiles: ['<node_internals>/**'],
+      sourceMapPathOverrides: { 'http://localhost:8001/*': `${testWorkspace}/web/*` },
+    });
+    handle.load();
+    await waitForPause(handle);
+    handle.assertLog({ substring: true });
   });
 });

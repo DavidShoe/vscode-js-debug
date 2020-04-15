@@ -8,15 +8,15 @@ import { BrowserLauncher } from './browserLauncher';
 import { DebugType } from '../../common/contributionUtils';
 import Dap from '../../dap/api';
 import { CancellationToken } from 'vscode';
-import { TelemetryReporter } from '../../telemetry/telemetryReporter';
+import { ITelemetryReporter } from '../../telemetry/telemetryReporter';
 import { createServer, Socket, Server, AddressInfo } from 'net';
 import { getDeferred } from '../../common/promiseUtil';
 import Connection from '../../cdp/connection';
-import { PipeTransport } from '../../cdp/transport';
 import { timeoutPromise } from '../../common/cancellation';
 import { ILaunchResult, defaultArgs } from './launcher';
 import { EventEmitter } from '../../common/events';
 import { BrowserArgs } from './browserArgs';
+import { GzipPipeTransport } from '../../cdp/gzipPipeTransport';
 
 @injectable()
 export class RemoteBrowserLauncher extends BrowserLauncher<AnyChromiumLaunchConfiguration> {
@@ -32,7 +32,8 @@ export class RemoteBrowserLauncher extends BrowserLauncher<AnyChromiumLaunchConf
    */
   protected resolveParams(params: AnyLaunchConfiguration) {
     return (params.type === DebugType.Chrome || params.type === DebugType.Edge) &&
-      params.request === 'launch'
+      params.request === 'launch' &&
+      params.browserLaunchLocation === 'ui'
       ? params
       : undefined;
   }
@@ -44,7 +45,7 @@ export class RemoteBrowserLauncher extends BrowserLauncher<AnyChromiumLaunchConf
     params: AnyChromiumLaunchConfiguration,
     dap: Dap.Api,
     cancellationToken: CancellationToken,
-    telemetryReporter: TelemetryReporter,
+    telemetryReporter: ITelemetryReporter,
   ): Promise<ILaunchResult> {
     if (this.server) {
       this.server.close();
@@ -76,7 +77,7 @@ export class RemoteBrowserLauncher extends BrowserLauncher<AnyChromiumLaunchConf
     );
 
     const logger = this.logger;
-    const transport = new PipeTransport(logger, socket);
+    const transport = new GzipPipeTransport(logger, socket);
     return {
       cdp: new Connection(transport, logger, telemetryReporter),
       process: {

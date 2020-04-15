@@ -22,6 +22,7 @@ import { tmpdir } from 'os';
 import { PrettyPrintTrackerFactory } from './ui/prettyPrint';
 import { toggleOnExperiment } from './ui/experimentEnlist';
 import { registerProfilingCommand } from './ui/profiling';
+import { TerminalLinkHandler } from './ui/terminalLinkHandler';
 
 // eslint-disable-next-line
 const packageJson = require('../package.json');
@@ -35,6 +36,7 @@ export function activate(context: vscode.ExtensionContext) {
       process.platform === 'win32' ? tmpdir() : context.storagePath || context.extensionPath,
     isVsCode: true,
     isRemote:
+      !!process.env.JS_DEBUG_USE_COMPANION ||
       vscode.extensions.getExtension(extensionId)?.extensionKind === vscode.ExtensionKind.Workspace,
     context,
   });
@@ -71,7 +73,11 @@ export function activate(context: vscode.ExtensionContext) {
   registerLongBreakpointUI(context);
   registerCompanionBrowserLaunch(context);
   registerCustomBreakpointsUI(context, debugSessionTracker);
-  registerDebugTerminalUI(context, services.get(DelegateLauncherFactory));
+  registerDebugTerminalUI(
+    context,
+    services.get(DelegateLauncherFactory),
+    services.get(TerminalLinkHandler),
+  );
   registerNpmScriptLens(context);
   registerProfilingCommand(context, services);
 }

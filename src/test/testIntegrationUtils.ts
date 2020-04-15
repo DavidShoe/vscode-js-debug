@@ -10,6 +10,7 @@ import { GoldenText } from './goldenText';
 import { testFixturesDir, TestRoot, testWorkspace } from './test';
 import { forceForwardSlashes } from '../common/pathUtils';
 import { IGoldenReporterTextTest } from './reporters/goldenTextReporterUtils';
+import { delay } from '../common/promiseUtil';
 
 process.env['DA_TEST_DISABLE_TELEMETRY'] = 'true';
 
@@ -51,7 +52,7 @@ const itIntegratesBasic = (
   fn: (s: IIntegrationState) => Promise<void> | void,
   testFunction: TestFunction | ExclusiveTestFunction = it,
 ) =>
-  testFunction(test, async function() {
+  testFunction(test, async function () {
     const golden = new GoldenText(this.test!.titlePath().join(' '), testWorkspace);
     const root = new TestRoot(golden, this.test!.fullTitle());
     await root.initialize;
@@ -80,6 +81,25 @@ itIntegratesBasic.only = (test: string, fn: (s: IIntegrationState) => Promise<vo
 itIntegratesBasic.skip = (test: string, fn: (s: IIntegrationState) => Promise<void> | void) =>
   itIntegratesBasic(test, fn, it.skip);
 export const itIntegrates = itIntegratesBasic;
+
+export const eventuallyOk = async <T>(
+  fn: () => Promise<T> | T,
+  timeout = 1000,
+  wait = 10,
+): Promise<T> => {
+  const deadline = Date.now() + timeout;
+  while (true) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (Date.now() + wait > deadline) {
+        throw e;
+      }
+
+      await delay(wait);
+    }
+  }
+};
 
 afterEach(async () => {
   await del([`${forceForwardSlashes(testFixturesDir)}/**`], {

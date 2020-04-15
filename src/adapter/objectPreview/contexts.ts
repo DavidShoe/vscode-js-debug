@@ -27,17 +27,14 @@ export const enum PreviewContextType {
   Hover = 'hover',
   PropertyValue = 'propertyValue',
   Copy = 'copy',
+  Clipboard = 'clipboard',
 }
 
 const repl: IPreviewContext = { budget: 1000, quoted: true };
 const hover: IPreviewContext = {
   budget: 1000,
   quoted: true,
-  postProcess: str =>
-    str
-      .replace(/\n/gm, '\\n')
-      .replace(/\r/gm, '\\r')
-      .replace(/\t/gm, '\\t'),
+  postProcess: str => str.replace(/\n/gm, '\\n').replace(/\r/gm, '\\r').replace(/\t/gm, '\\t'),
 };
 const copy: IPreviewContext = { budget: Infinity, quoted: false };
 const fallback: IPreviewContext = { budget: 100, quoted: true };
@@ -51,6 +48,7 @@ export const getContextForType = (type: PreviewContextType | string | undefined)
     case PreviewContextType.PropertyValue:
       return hover;
     case PreviewContextType.Copy:
+    case PreviewContextType.Clipboard:
       return copy;
     default:
       // the type is received straight from the DAP, so it's possible we might

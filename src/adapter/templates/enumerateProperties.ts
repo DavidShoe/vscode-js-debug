@@ -10,7 +10,7 @@ import { ICompletionWithSort, CompletionKind } from '../completions';
 /**
  * Enumerates completion items of the property.
  */
-export const enumerateProperties = remoteFunction(function(
+export const enumerateProperties = remoteFunction(function (
   this: unknown,
   target: unknown,
   prefix: string,
@@ -20,6 +20,10 @@ export const enumerateProperties = remoteFunction(function(
   const getCompletionKind = (name: string, dtype: string | undefined, value: unknown) => {
     if (dtype !== 'function') {
       return defaultType;
+    }
+
+    if (name === 'constructor') {
+      return CompletionKind.Class;
     }
 
     // Say this value is a class if either it stringifies into a native ES6

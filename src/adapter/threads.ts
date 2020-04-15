@@ -19,12 +19,15 @@ import { SmartStepper } from './smartStepping';
 import { IPreferredUiLocation, Source, SourceContainer, IUiLocation, base1To0 } from './sources';
 import { StackFrame, StackTrace } from './stackTrace';
 import { VariableStore, IVariableStoreDelegate } from './variables';
-import { toStringForClipboard } from './templates/toStringForClipboard';
 import { previewThis } from './templates/previewThis';
 import { UserDefinedBreakpoint } from './breakpoints/userDefinedBreakpoint';
 import { ILogger } from '../common/logging';
 import { AnyObject } from './objectPreview/betterTypes';
 import { IEvaluator } from './evaluator';
+import {
+  serializeForClipboardTmpl,
+  serializeForClipboard,
+} from './templates/serializeForClipboard';
 
 const localize = nls.loadMessageBundle();
 
@@ -115,7 +118,6 @@ export class Thread implements IVariableStoreDelegate {
   private _pausedDetails?: IPausedDetails;
   private _pausedVariables?: VariableStore;
   private _pausedForSourceMapScriptId?: string;
-  private _scripts: Map<string, Script> = new Map();
   private _executionContexts: Map<number, ExecutionContext> = new Map();
   private _delegate: IThreadDelegate;
   readonly replVariables: VariableStore;
@@ -189,8 +191,12 @@ export class Thread implements IVariableStoreDelegate {
 
   async resume(): Promise<Dap.ContinueResult | Dap.Error> {
     this._sourceContainer.clearDisabledSourceMaps();
-    if (!(await this._cdp.Debugger.resume({})))
-      return errors.createSilentError(localize('error.resumeDidFail', 'Unable to resume'));
+    if (!(await this._cdp.Debugger.resume({}))) {
+      // We don't report the failure if the target wasn't paused. VS relies on this behavior.
+      if (this._pausedDetails !== undefined) {
+        return errors.createSilentError(localize('error.resumeDidFail', 'Unable to resume'));
+      }
+    }
     return { allThreadsContinued: false };
   }
 
@@ -346,14 +352,24 @@ export class Thread implements IVariableStoreDelegate {
         }
       }
     }
-    // TODO: consider checking expression for side effects on hover.
-    const params: Cdp.Runtime.EvaluateParams = {
-      expression: args.expression,
-      includeCommandLineAPI: true,
-      objectGroup: 'console',
-      generatePreview: true,
-      timeout: args.context === 'hover' ? 500 : undefined,
-    };
+
+    // For clipboard evaluations, return a safe JSON-stringified string.
+    const params: Cdp.Runtime.EvaluateParams =
+      args.context === 'clipboard'
+        ? {
+            expression: serializeForClipboardTmpl(args.expression, '2'),
+            includeCommandLineAPI: true,
+            returnByValue: true,
+            objectGroup: 'console',
+          }
+        : {
+            expression: args.expression,
+            includeCommandLineAPI: true,
+            objectGroup: 'console',
+            generatePreview: true,
+            timeout: args.context === 'hover' ? 500 : undefined,
+          };
+
     if (args.context === 'repl') {
       params.expression = sourceUtils.wrapObjectLiteral(params.expression);
       if (params.expression.indexOf('await') !== -1) {
@@ -415,7 +431,7 @@ export class Thread implements IVariableStoreDelegate {
 
     if (response.exceptionDetails) {
       const formattedException = await this._formatException(response.exceptionDetails);
-      throw new errors.ExternalError(formattedException.output);
+      throw new errors.ProtocolError(errors.replError(formattedException.output));
     } else {
       const contextName =
         this._selectedContext && this.defaultExecutionContext() !== this._selectedContext
@@ -459,6 +475,7 @@ export class Thread implements IVariableStoreDelegate {
       else this._revealObject(event.object);
     });
     this._cdp.Runtime.enable({});
+    this._cdp.Network.enable({});
 
     this._cdp.Debugger.on('paused', async event => this._onPaused(event));
     this._cdp.Debugger.on('resumed', () => this._onResumed());
@@ -713,7 +730,7 @@ export class Thread implements IVariableStoreDelegate {
    * possible script IDs; this waits if we see one that we don't.
    */
   private async getScriptByIdOrWait(scriptId: string, maxTime = 500) {
-    let script = this._scripts.get(scriptId);
+    let script = this._sourceContainer.scriptsById.get(scriptId);
     if (script) {
       return script;
     }
@@ -721,7 +738,7 @@ export class Thread implements IVariableStoreDelegate {
     const deadline = Date.now() + maxTime;
     do {
       await delay(50);
-      script = this._scripts.get(scriptId);
+      script = this._sourceContainer.scriptsById.get(scriptId);
     } while (!script && Date.now() < deadline);
 
     return script;
@@ -1047,8 +1064,8 @@ export class Thread implements IVariableStoreDelegate {
   }
 
   private _removeAllScripts(silent = false) {
-    const scripts = Array.from(this._scripts.values());
-    this._scripts.clear();
+    const scripts = Array.from(this._sourceContainer.scriptsById.values());
+    this._sourceContainer.scriptsById.clear();
     this._scriptSources.clear();
     Promise.all(
       scripts.map(script =>
@@ -1064,7 +1081,7 @@ export class Thread implements IVariableStoreDelegate {
   }
 
   private _onScriptParsed(event: Cdp.Debugger.ScriptParsedEvent) {
-    if (this._scripts.has(event.scriptId)) {
+    if (this._sourceContainer.scriptsById.has(event.scriptId)) {
       return;
     }
 
@@ -1134,7 +1151,7 @@ export class Thread implements IVariableStoreDelegate {
       source: createSource(),
       hash: event.hash,
     };
-    this._scripts.set(event.scriptId, script);
+    this._sourceContainer.scriptsById.set(event.scriptId, script);
 
     if (event.sourceMapURL) {
       // If we won't pause before executing this script, still try to load source
@@ -1151,7 +1168,7 @@ export class Thread implements IVariableStoreDelegate {
   async _handleSourceMapPause(scriptId: string, brokenOn: Cdp.Debugger.Location): Promise<boolean> {
     this._pausedForSourceMapScriptId = scriptId;
     const timeout = this._sourceContainer.sourceMapTimeouts().scriptPaused;
-    const script = this._scripts.get(scriptId);
+    const script = this._sourceContainer.scriptsById.get(scriptId);
     if (!script) {
       this._pausedForSourceMapScriptId = undefined;
       return false;
@@ -1234,10 +1251,10 @@ export class Thread implements IVariableStoreDelegate {
     }
 
     try {
-      const result = await toStringForClipboard({
+      const result = await serializeForClipboard({
         cdp: this.cdp(),
         objectId: object.objectId,
-        args: [object.subtype],
+        args: [2],
         silent: true,
         returnByValue: true,
       });
