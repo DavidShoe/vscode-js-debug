@@ -9,13 +9,14 @@ import CdpConnection from '../../cdp/connection';
 import { IEdgeLaunchConfiguration, AnyLaunchConfiguration } from '../../configuration';
 import { IWebViewConnectionInfo } from '../targets';
 import { ITelemetryReporter } from '../../telemetry/telemetryReporter';
+import { IDeferred } from '../../common/promiseUtil'
 import { getDeferred } from '../../common/promiseUtil';
 import { WebSocketTransport } from '../../cdp/webSocketTransport';
 import { NeverCancelled } from '../../common/cancellation';
 import { join } from 'path';
 import Dap from '../../dap/api';
 import { CancellationToken } from 'vscode';
-import { createTargetFilterForConfig } from '../../common/urlUtils';
+import { createTargetFilter } from '../../common/urlUtils';
 import { BrowserLauncher } from './browserLauncher';
 import { DebugType } from '../../common/contributionUtils';
 import { StoragePath, FS, FsPromises, BrowserFinder, IInitializeParams } from '../../ioc-extras';
@@ -26,9 +27,28 @@ import { canAccess } from '../../common/fsUtils';
 import { browserNotFound, ProtocolError } from '../../dap/errors';
 import { IBrowserFinder, isQuality } from 'vscode-js-debug-browsers';
 import { ISourcePathResolver } from '../../common/sourcePathResolver';
+import { Cdp} from '../../cdp/api';
+
+
+class ConnectionInfo {
+  public port: number = 0;
+  public id: string = "";
+  public connection!: CdpConnection;
+}
 
 @injectable()
 export class EdgeLauncher extends BrowserLauncher<IEdgeLaunchConfiguration> {
+
+  private _connections: Array<ConnectionInfo> = [];
+
+  private filter!: (url: string) => boolean;
+
+  private launchConfig!: IEdgeLaunchConfiguration;
+
+  private info!: IWebViewConnectionInfo;
+
+  private webViewStartDebugPromise!: IDeferred<number>;
+
   constructor(
     @inject(StoragePath) storagePath: string,
     @inject(ILogger) logger: ILogger,
@@ -63,26 +83,33 @@ export class EdgeLauncher extends BrowserLauncher<IEdgeLaunchConfiguration> {
     cancellationToken: CancellationToken,
     telemetryReporter: ITelemetryReporter,
   ) {
+
+    this.filter = createTargetFilter(params.urlFilter);
+    this.launchConfig = params;
+
     return super.launchBrowser(
       params,
       dap,
       cancellationToken,
       telemetryReporter,
       params.useWebView
-        ? this.getWebviewPort(params, createTargetFilterForConfig(params), telemetryReporter)
+        ? this.getWebviewPort(params, telemetryReporter)
         : undefined,
     );
   }
 
   /**
-   * Gets the port number we should connect to to debug webviews in the target.
+   * Gets the port number we should connect to for debugging webviews in the target.
    */
   private async getWebviewPort(
     params: IEdgeLaunchConfiguration,
-    filter: (info: IWebViewConnectionInfo) => boolean,
+//    filter: (info: IWebViewConnectionInfo) => boolean,
     telemetryReporter: ITelemetryReporter,
   ): Promise<number> {
-    const promisedPort = getDeferred<number>();
+    const promisedPort: IDeferred<number> = getDeferred<number>();
+
+    // Cache this for later resolving when we get a matching webview target
+    this.webViewStartDebugPromise = promisedPort;
 
     if (!params.runtimeExecutable) {
       // runtimeExecutable is required for web view debugging.
@@ -98,24 +125,35 @@ export class EdgeLauncher extends BrowserLauncher<IEdgeLaunchConfiguration> {
 
     const server = createServer(stream => {
       stream.on('data', async data => {
-        const info: IWebViewConnectionInfo = JSON.parse(data.toString());
+        this.info = JSON.parse(data.toString());
+
+        console.log("New webview connection: " + this.info.url);
 
         // devtoolsActivePort will always start with the port number
         // and look something like '92202\n ...'
-        const dtString = info.devtoolsActivePort || '';
+        const dtString = this.info.devtoolsActivePort || '';
         const dtPort = parseInt(dtString.split('\n').shift() || '');
         const port = params.port || dtPort || params.port;
 
-        if (!this._mainTarget && filter(info)) {
-          promisedPort.resolve(port);
-        }
-
         // All web views started under our debugger are waiting to to be resumed.
-        const wsURL = `ws://${params.address}:${port}/devtools/${info.type}/${info.id}`;
+        const wsURL = `ws://${params.address}:${port}/devtools/${this.info.type}/${this.info.id}`;
         const ws = await WebSocketTransport.create(wsURL, NeverCancelled);
         const connection = new CdpConnection(ws, this.logger, telemetryReporter);
+
+        // keep the list of connections so we can lookup the port to debug on and clean up later
+        const newConnection: ConnectionInfo = new ConnectionInfo();
+        newConnection.id = this.info.id;
+        newConnection.port = port;
+        newConnection.connection = connection;
+        this._connections.push(newConnection);
+
+        // Get navigation events so we can watch for the target URL
+        connection.rootSession().Page.on('frameNavigated', event => this._onFrameNavigated(event));
+        connection.rootSession().Page.enable({}); // if you don't enable you won't get the frameNavigated events
+
         await connection.rootSession().Runtime.runIfWaitingForDebugger({});
-        connection.close();
+        // Note: do not close the connection, we need it open to get the navigation events
+        //connection.close();
       });
     });
     server.on('error', promisedPort.reject);
@@ -162,5 +200,53 @@ export class EdgeLauncher extends BrowserLauncher<IEdgeLaunchConfiguration> {
     }
 
     return resolvedPath;
+  }
+
+
+  private async _onFrameNavigated(framePayload: Cdp.Page.FrameNavigatedEvent) {
+    const url = framePayload.frame.url;
+    const id = framePayload.frame.id;
+    console.log('onFrameNavigated: ' + url + " ID: " + id);
+
+    //const webViewTarget = [{ url: url } as chromeConnection.ITarget];
+    console.log('checking for matching target: ' + url + ' <=> ' + this.launchConfig.urlFilter);
+
+    // // If we are not already debugging a target and this webview matches the filter for the destination URL
+    if (!this._mainTarget && this.filter(url)) {
+      console.log('found web target matching filter');
+
+
+      // Lookup the port number of the matching connection and close the navigation events as we are done with them
+      for (const key in this._connections) {
+          if (this._connections[key].id === id) {
+              // Found it
+              console.log('Found connection to activate');
+              this.webViewStartDebugPromise.resolve(this._connections[key].port); // start the debugging over this port.
+          }
+
+          //this._connections[key].connection.close();
+      }
+
+      // clean up the connection cache array.
+      //this._connections.length = 0;
+
+      // And we can close the main pipe as we can't reconnect
+      await this.closePipeServer();
+
+    } else {
+        console.log('Non matching web target');
+    }
+  }
+
+  private async closePipeServer() {
+      // await new Promise((resolve) => {
+      //     if (this._webviewPipeServer) {
+      //         this._webviewPipeServer.close(() => {
+      //             resolve();
+      //         });
+      //     } else {
+      //         resolve();
+      //     }
+      // });
   }
 }

@@ -69,6 +69,8 @@ export class FrameModel {
   }
 
   _frameNavigated(cdp: Cdp.Api, targetId: Cdp.Target.TargetID, framePayload: Cdp.Page.Frame) {
+    console.log("_frameNavigated");
+
     let frame = this._frames.get(framePayload.id);
     if (!frame) {
       // Simulate missed "frameAttached" for a main frame navigation to the new backend process.
