@@ -31,8 +31,8 @@ import { Cdp} from '../../cdp/api';
 
 
 class ConnectionInfo {
-  public port: number = 0;
-  public id: string = "";
+  public port = 0;
+  public id = "";
   public connection!: CdpConnection;
 }
 
