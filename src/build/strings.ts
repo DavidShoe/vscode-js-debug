@@ -31,7 +31,7 @@ const strings = {
   'extensionHost.snippet.launch.label': 'VS Code Extension Development',
 
   'edge.useWebView.description':
-    "(Edge (Chromium) only) When 'true', the debugger will treat the runtime executable as a host application that contains a WebView allowing you to debug the WebView script content.",
+    "(Edge (Chromium) only) When 'true', the debugger will treat the runtime executable as a host application that contains a WebView allowing you to debug the WebView script content.  When 'advanced' will use the urlFilter value to attach to the first webview that has a matching url",
 
   'chrome.label': 'Chrome (preview)',
   'edge.label': 'Edge (preview)',
@@ -72,7 +72,7 @@ const strings = {
     'Retry for this number of milliseconds to connect to the browser. Default is 10000 ms.',
   'browser.url.description': 'Will search for a tab with this exact url and attach to it, if found',
   'browser.urlFilter.description':
-    'Will search for a page with this url and attach to it, if found. Can have * wildcards.',
+    'Only used when useWebView="advanced". Will search for a page with this url and attach to it, if found. Can have * wildcards.',
   'browser.webRoot.description':
     'This specifies the workspace absolute path to the webserver root. Used to resolve paths like `/app.js` to files on disk. Shorthand for a pathMapping for "/"',
   'node.launch.args.description': 'Command line arguments passed to the program.',

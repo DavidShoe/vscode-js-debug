@@ -775,7 +775,15 @@ const edgeLaunchConfig: IDebugger<IEdgeLaunchConfiguration> = {
   configurationAttributes: {
     ...chromeLaunchConfig.configurationAttributes,
     useWebView: {
-      type: 'boolean',
+      oneOf: [
+        {
+          type: 'boolean',
+        },
+        {
+          type: 'string',
+          enum: ['advanced'],
+        },
+      ],
       description: refString('edge.useWebView.description'),
       default: false,
     },
@@ -802,7 +810,15 @@ const edgeAttachConfig: IDebugger<IEdgeAttachConfiguration> = {
   configurationAttributes: {
     ...chromiumBaseConfigurationAttributes,
     useWebView: {
-      type: 'boolean',
+      oneOf: [
+        {
+          type: 'boolean',
+        },
+        {
+          type: 'string',
+          enum: ['advanced'],
+        },
+      ],
       description: refString('edge.useWebView.description'),
       default: false,
     },
